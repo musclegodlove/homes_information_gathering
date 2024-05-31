@@ -1,0 +1,69 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import time
+
+# Google Sheets APIの認証情報
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+SERVICE_ACCOUNT_FILE = 'credentials.json'
+
+credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+service = build('sheets', 'v4', credentials=credentials)
+
+# 取得したいGoogleスプレッドシートIDとシート名
+SPREADSHEET_ID = '1jMkc3ZGFZKgulzoN8VuFLk2wK3r-UA3RWYJvyM_d0Fs'
+SHEET_NAME = 'test sheet'
+
+def fetch_house_info(url):
+    # Seleniumを使用してブラウザを起動
+    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+    driver.get(url)
+    time.sleep(5)  # ページが完全に読み込まれるまで待機
+
+    # ページソースを取得してBeautifulSoupで解析
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    driver.quit()
+
+    # 物件名を取得する
+    property_name_tag = soup.select_one('span.block.text-sm.detail-main-screen\\:text-base.font-bold.mt-1')
+    if property_name_tag:
+        property_name = property_name_tag.text.strip()
+    else:
+        property_name = 'N/A'
+
+    # "主要採光面"の次の<dd>要素を取得する
+    main_lighting_label = soup.find('dt', text='主要採光面')
+    if main_lighting_label:
+        main_lighting = main_lighting_label.find_next_sibling('dd')
+        if main_lighting:
+            main_lighting_value = main_lighting.text.strip()
+        else:
+            main_lighting_value = 'N/A'
+    else:
+        main_lighting_value = 'N/A'
+
+    return [property_name, main_lighting_value]
+
+def write_to_sheets(data):
+    sheet = service.spreadsheets()
+    # 現在のデータの範囲を取得する
+    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=SHEET_NAME).execute()
+    num_rows = len(result.get('values', []))
+
+    # 書き込む範囲を次の行に設定する
+    range_ = f'{SHEET_NAME}!B{num_rows + 1}:H{num_rows + 1}'
+    value_input_option = 'RAW'
+    value_range_body = {'values': [[data[0], '', '', '', '', '', data[1]]]}
+    request = sheet.values().update(spreadsheetId=SPREADSHEET_ID, range=range_,
+                                    valueInputOption=value_input_option, body=value_range_body)
+    response = request.execute()
+    print(f'Data written to {SHEET_NAME}!{range_}')
+
+if __name__ == '__main__':
+    url = 'https://www.homes.co.jp/chintai/room/bae68845fb1590cae63dc06724091baf1a36a626/?bid=1392040048605'
+    house_info = fetch_house_info(url)
+    write_to_sheets(house_info)
