@@ -1,0 +1,84 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import time
+
+# Google Sheets APIの認証情報
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+SERVICE_ACCOUNT_FILE = 'credentials.json'
+
+credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+service = build('sheets', 'v4', credentials=credentials)
+
+# 取得したいGoogleスプレッドシートIDとシート名
+SPREADSHEET_ID = '1jMkc3ZGFZKgulzoN8VuFLk2wK3r-UA3RWYJvyM_d0Fs'
+SHEET_NAME_INPUT = 'url_list'  # URLリストが含まれるシート名
+SHEET_NAME_OUTPUT = 'results'  # 結果を書き込むシート名
+
+def fetch_house_info(url):
+    # Seleniumを使用してブラウザを起動
+    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+    driver.get(url)
+    time.sleep(5)  # ページが完全に読み込まれるまで待機
+
+    # ページソースを取得してBeautifulSoupで解析
+    page_source = driver.page_source
+    driver.quit()
+    soup = BeautifulSoup(page_source, 'html.parser')
+
+    # 物件名を取得する
+    property_name_tag = soup.select_one('span.block.text-sm.detail-main-screen\\:text-base.font-bold.mt-1')
+    if property_name_tag:
+        property_name = property_name_tag.text.strip()
+    else:
+        property_name = 'N/A'
+
+    # "主要採光面"の次の<dd>要素を取得する
+    main_lighting_label = soup.find('dt', text='主要採光面')
+    if main_lighting_label:
+        main_lighting = main_lighting_label.find_next_sibling('dd')
+        if main_lighting:
+            main_lighting_value = main_lighting.text.strip()
+        else:
+            main_lighting_value = 'N/A'
+    else:
+        main_lighting_value = 'N/A'
+
+    return [property_name, main_lighting_value]
+
+def write_to_sheets(data, sheet_name):
+    sheet = service.spreadsheets()
+    # 現在のデータの範囲を取得する
+    range_ = f'{sheet_name}!A1:Z'  # 取り込む範囲を広めに設定
+    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=range_).execute()
+    num_rows = len(result.get('values', []))
+
+    # 書き込む範囲を次の行に設定する
+    values = [[""] * 8]  # A列からH列までの空のリスト
+    values[0][1] = data[0]  # B列（物件名）
+    values[0][7] = data[1]  # H列（主要採光面）
+    
+    range_ = f'{sheet_name}!A{num_rows + 1}:H{num_rows + 1}'
+    value_input_option = 'RAW'
+    value_range_body = {'values': values}
+    request = sheet.values().update(spreadsheetId=SPREADSHEET_ID, range=range_,
+                                    valueInputOption=value_input_option, body=value_range_body)
+    response = request.execute()
+    print(f'Data written to {sheet_name}!{range_}')
+
+def read_urls_from_sheet(sheet_name):
+    sheet = service.spreadsheets()
+    range_ = f'{sheet_name}!A1:A'
+    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=range_).execute()
+    urls = result.get('values', [])
+    return [url[0] for url in urls if url]
+
+if __name__ == '__main__':
+    urls = read_urls_from_sheet(SHEET_NAME_INPUT)
+    for url in urls:
+        house_info = fetch_house_info(url)
+        write_to_sheets(house_info, SHEET_NAME_OUTPUT)
